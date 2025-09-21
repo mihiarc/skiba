@@ -161,14 +161,40 @@ class point_extraction:
 
         # Load data with safety checks
         if isinstance(data, str):
-            coordinates = pd.read_csv(data)
+            # Use robust CSV handler for file paths
+            from .csv_handler import process_csv_for_skiba
+            coordinates = process_csv_for_skiba(data, strict=False)
             gdf = gpd.GeoDataFrame(
                 coordinates,
                 geometry=gpd.points_from_xy(coordinates.LON, coordinates.LAT),
                 crs="EPSG:4326",  # Directly set CRS during creation
             )
         elif isinstance(data, pd.DataFrame):
-            coordinates = data
+            # For DataFrames, ensure they have the required columns
+            from .csv_handler import CSVHandler
+            handler = CSVHandler(strict=False)
+
+            # Clean and validate the DataFrame
+            coordinates = handler.clean_dataframe(data.copy())
+
+            # Find and validate coordinate columns
+            lat_col = handler._find_column(coordinates.columns, handler.LAT_COLUMNS)
+            lon_col = handler._find_column(coordinates.columns, handler.LON_COLUMNS)
+            id_col = handler._find_column(coordinates.columns, handler.ID_COLUMNS)
+
+            if not lat_col or not lon_col:
+                raise ValueError("DataFrame must contain latitude and longitude columns")
+
+            # Validate coordinates
+            coordinates, _ = handler.validate_coordinates(coordinates, lat_col, lon_col)
+            coordinates = handler.generate_ids(coordinates, id_col)
+
+            # Rename to standard column names
+            rename_dict = {lat_col: 'LAT', lon_col: 'LON'}
+            if id_col and id_col != 'plot_ID':
+                rename_dict[id_col] = 'plot_ID'
+            coordinates = coordinates.rename(columns=rename_dict)
+
             gdf = gpd.GeoDataFrame(
                 coordinates,
                 geometry=gpd.points_from_xy(coordinates.LON, coordinates.LAT),
