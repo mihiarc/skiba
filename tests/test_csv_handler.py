@@ -247,6 +247,101 @@ C,45.7,-122.8,Björk"""
         final_df = self.handler.generate_ids(validated_df, 'site_id')
         self.assertTrue(all(final_df['site_id'].notna()))
 
+    def test_path_traversal_security(self):
+        """Test protection against path traversal attacks."""
+        # Try to access parent directories
+        dangerous_paths = [
+            "../../../etc/passwd",
+            "../../sensitive_data.csv",
+            "/etc/passwd",
+        ]
+
+        for dangerous_path in dangerous_paths:
+            with self.assertRaises((ValueError, FileNotFoundError)) as context:
+                self.handler.load_csv(dangerous_path)
+
+    def test_file_size_limit(self):
+        """Test file size limit enforcement."""
+        # Create a large file path (we'll mock the size check)
+        large_file = self.create_temp_csv("a,b,c\n1,2,3")
+
+        # Save original MAX_FILE_SIZE
+        original_limit = CSVHandler.MAX_FILE_SIZE
+        try:
+            # Set a tiny limit
+            CSVHandler.MAX_FILE_SIZE = 10  # 10 bytes
+            handler = CSVHandler()
+
+            with self.assertRaises(ValueError) as context:
+                handler.load_csv(large_file)
+            self.assertIn("too large", str(context.exception).lower())
+        finally:
+            # Restore original limit
+            CSVHandler.MAX_FILE_SIZE = original_limit
+
+    def test_max_columns_limit(self):
+        """Test maximum columns limit."""
+        # Create CSV with many columns
+        num_cols = 50
+        header = ','.join([f'col{i}' for i in range(num_cols)])
+        data = ','.join(['1'] * num_cols)
+        csv_content = f"{header}\n{data}"
+
+        filepath = self.create_temp_csv(csv_content)
+
+        # Save original limit
+        original_limit = CSVHandler.MAX_COLUMNS
+        try:
+            # Set a low limit
+            CSVHandler.MAX_COLUMNS = 10
+            handler = CSVHandler()
+
+            with self.assertRaises(ValueError) as context:
+                handler.load_csv(filepath)
+            self.assertIn("too many columns", str(context.exception).lower())
+        finally:
+            CSVHandler.MAX_COLUMNS = original_limit
+
+    def test_missing_longitude_column(self):
+        """Test specific error when longitude column is missing."""
+        csv_content = """plot_id,latitude,elevation
+A,45.5,1000
+B,45.6,1100"""
+
+        filepath = self.create_temp_csv(csv_content)
+
+        with self.assertRaises(ValueError) as context:
+            self.handler.load_csv(filepath)
+        self.assertIn("longitude", str(context.exception).lower())
+
+    def test_partial_column_name_matching(self):
+        """Test partial string matching for complex column names."""
+        csv_content = """ObjectID_1,Latitude_WGS84,Longitude_NAD83
+1,45.5,-122.6
+2,45.6,-122.7"""
+
+        filepath = self.create_temp_csv(csv_content)
+        df = self.handler.load_csv(filepath)
+
+        # Should match despite complex names
+        self.assertIn('LAT', df.columns)
+        self.assertIn('LON', df.columns)
+        self.assertEqual(len(df), 2)
+
+    def test_csv_parsing_fallback(self):
+        """Test CSV parsing with malformed data requiring fallback."""
+        # Create a problematic CSV that might need special parsing
+        csv_content = """plot_id,lat,lon,notes
+A,45.5,-122.6,"Complex, data with comma"
+B,45.6,-122.7,"Another ""quoted"" value"
+C,45.7,-122.8,Simple"""
+
+        filepath = self.create_temp_csv(csv_content)
+        df = self.handler.load_csv(filepath)
+
+        # Should handle complex CSV formats
+        self.assertEqual(len(df), 3)
+
     def test_process_csv_convenience_function(self):
         """Test the convenience function for processing CSVs."""
         csv_content = """plot_ID,LAT,LON

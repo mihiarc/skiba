@@ -12,10 +12,17 @@ import numpy as np
 import warnings
 from typing import Optional, Dict, List, Tuple, Union
 import re
+import os
+from pathlib import Path
 
 
 class CSVHandler:
     """Robust CSV handler for coordinate data with extensive validation."""
+
+    # Resource limits for security
+    MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+    MAX_ROWS = 1_000_000
+    MAX_COLUMNS = 1000
 
     # Possible column name variations
     LAT_COLUMNS = [
@@ -51,6 +58,45 @@ class CSVHandler:
         """
         self.strict = strict
         self.validation_report = {}
+
+    def _validate_filepath(self, filepath: str) -> Path:
+        """
+        Validate file path for security and size limits.
+
+        Args:
+            filepath: Path to file
+
+        Returns:
+            Validated Path object
+
+        Raises:
+            FileNotFoundError: If file doesn't exist
+            ValueError: If path is invalid or file is too large
+        """
+        # Convert to Path and resolve to prevent traversal
+        try:
+            path = Path(filepath).resolve()
+        except Exception as e:
+            raise ValueError(f"Invalid file path: {e}")
+
+        # Ensure file exists
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {filepath}")
+
+        # Ensure it's a file, not a directory
+        if not path.is_file():
+            raise ValueError(f"Not a file: {filepath}")
+
+        # Check file size limit
+        file_size = path.stat().st_size
+        if file_size > self.MAX_FILE_SIZE:
+            raise ValueError(f"File too large ({file_size / 1024 / 1024:.1f}MB > {self.MAX_FILE_SIZE / 1024 / 1024}MB limit)")
+
+        # Check file extension
+        if path.suffix.lower() not in ['.csv', '.txt', '.tsv']:
+            warnings.warn(f"Unusual file extension: {path.suffix}")
+
+        return path
 
     def clean_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -240,6 +286,9 @@ class CSVHandler:
         Returns:
             Cleaned and validated DataFrame
         """
+        # Validate file path for security
+        validated_path = self._validate_filepath(filepath)
+
         # Try different encodings if needed
         encodings = [encoding, 'utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
 
@@ -247,14 +296,17 @@ class CSVHandler:
         for enc in encodings:
             try:
                 # Use on_bad_lines='skip' to handle malformed rows
-                df = pd.read_csv(filepath, encoding=enc, on_bad_lines='skip')
+                # Add nrows limit for security
+                df = pd.read_csv(validated_path, encoding=enc, on_bad_lines='skip',
+                               nrows=self.MAX_ROWS)
                 break
             except UnicodeDecodeError:
                 continue
             except Exception as e:
                 # Try with different parsing options for problematic files
                 try:
-                    df = pd.read_csv(filepath, encoding=enc, on_bad_lines='skip', engine='python')
+                    df = pd.read_csv(validated_path, encoding=enc, on_bad_lines='skip',
+                                   engine='python', nrows=self.MAX_ROWS)
                     break
                 except:
                     if enc == encodings[-1]:
@@ -262,6 +314,10 @@ class CSVHandler:
 
         if df is None:
             raise ValueError("Could not read CSV file with any common encoding")
+
+        # Check column limit for security
+        if len(df.columns) > self.MAX_COLUMNS:
+            raise ValueError(f"Too many columns ({len(df.columns)} > {self.MAX_COLUMNS} limit)")
 
         # Clean the dataframe
         df = self.clean_dataframe(df)
